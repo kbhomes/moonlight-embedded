@@ -14,6 +14,8 @@ static AVFrame *frame;
 #define DECODE_BUFFER_SIZE 1024 * 128
 static uint8_t *decodeBuffer;
 
+#define SLICE_COUNT 4
+
 static void switch_video_cleanup(void) {
   fprintf(stderr, "[VIDEO] Cleaned up renderer\n");
 }
@@ -25,8 +27,6 @@ static int switch_video_setup(int videoFormat, int width, int height, int redraw
           height,
           redrawRate
           );
-
-  gs_sps_init(width, height);
 
   codec = avcodec_find_decoder(AV_CODEC_ID_H264);
   if (!codec) {
@@ -43,6 +43,13 @@ static int switch_video_setup(int videoFormat, int width, int height, int redraw
   decoder->width = width;
   decoder->height = height;
   decoder->pix_fmt = AV_PIX_FMT_YUV420P;
+  decoder->flags |= AV_CODEC_FLAG_LOW_DELAY;
+
+  // Decode each slice of each frame in parallel on a separate thread.
+  // This allows multi-threaded decode while avoiding adding latency
+  // which FF_THREAD_FRAME would do.
+  decoder->thread_type = FF_THREAD_SLICE;
+  decoder->thread_count = SLICE_COUNT;
 
   if (avcodec_open2(decoder, codec, NULL) < 0) {
     fprintf(stderr, "[VIDEO] Could not open H264 codec for decoding\n");
@@ -84,9 +91,6 @@ static void switch_video_stop(void) {
 
 static int switch_video_submit_decode_unit(PDECODE_UNIT decodeUnit) {
   int ret;
-
-  // Decode the SPS headers for the H.264 frame
-  gs_sps_fix(decodeUnit, 0);
 
   // Collect the data from this decode unit
   PLENTRY bufferEntry = decodeUnit->bufferList;
@@ -133,5 +137,5 @@ DECODER_RENDERER_CALLBACKS decoder_callbacks_switch = {
   .stop = switch_video_stop,
   .cleanup = switch_video_cleanup,
   .submitDecodeUnit = switch_video_submit_decode_unit,
-  .capabilities = CAPABILITY_DIRECT_SUBMIT,
+  .capabilities = CAPABILITY_DIRECT_SUBMIT | CAPABILITY_SLICES_PER_FRAME(SLICE_COUNT) | CAPABILITY_REFERENCE_FRAME_INVALIDATION_AVC,
 };
